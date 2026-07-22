@@ -1,39 +1,141 @@
+# SQLBot 多服务部署编排（postgres / backend / mcp / g2-ssr / frontend）
+#
+# 快速开始：
+#   docker compose build
+#   docker compose up -d
+#   浏览器访问 http://<宿主IP>:8000/   账号 admin / SQLBot@123456
+#
+# 生产环境建议在同级目录创建 .env 覆盖下列敏感/环境相关变量：
+#   POSTGRES_PASSWORD / SECRET_KEY / DEFAULT_PWD / BACKEND_CORS_ORIGINS / SERVER_IMAGE_HOST ...
+
+# 注：postgres 选用自带 pgvector 扩展的镜像（SQLBot 嵌入向量依赖）。
+#     公共镜像可换 pgvector/pgvector:pg17。
+x-backend-env: &backend-env
+  POSTGRES_SERVER: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_DB: ${POSTGRES_DB:-sqlbot}
+  POSTGRES_USER: ${POSTGRES_USER:-root}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Password123@pg}
+  PROJECT_NAME: ${PROJECT_NAME:-SQLBot}
+  CONTEXT_PATH: ${CONTEXT_PATH:-}
+  SECRET_KEY: ${SECRET_KEY:-y5txe1mRmS_JpOrUzFzHEu-kIQn3lf7ll0AOv9DQh0s}
+  DEFAULT_PWD: ${DEFAULT_PWD:-SQLBot@123456}
+  # 跨域：同源部署不触发；外网/iframe 嵌入时把对应来源加入下方列表
+  BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost,http://localhost:8000,http://localhost:5173}
+  FRONTEND_HOST: http://frontend
+  # 图表生成链路：后端 -> g2-ssr 写图 -> mcp 在 /images 对外提供
+  MCP_IMAGE_HOST: http://g2-ssr:3000
+  SERVER_IMAGE_HOST: ${SERVER_IMAGE_HOST:-http://localhost:8000/images/}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  SQL_DEBUG: ${SQL_DEBUG:-false}
+  CACHE_TYPE: ${CACHE_TYPE:-memory}
+  CACHE_REDIS_URL: ${CACHE_REDIS_URL:-}
+  SQLBOT_DOC_ENABLED: ${SQLBOT_DOC_ENABLED:-true}
+
 services:
-  sqlbot:
-    image: dataease/sqlbot
-    container_name: sqlbot
-    restart: always
-    privileged: true
-    networks:
-      - sqlbot-network
-    ports:
-      - 8000:8000
-      - 8001:8001
+  postgres:
+    image: registry.cn-qingdao.aliyuncs.com/dataease/postgres:17.6
+    container_name: sqlbot-postgres
+    restart: unless-stopped
     environment:
-      # Database configuration
-      POSTGRES_SERVER: localhost
-      POSTGRES_PORT: 5432
-      POSTGRES_DB: sqlbot
-      POSTGRES_USER: root
-      POSTGRES_PASSWORD: Password123@pg
-      # Project basic settings
-      PROJECT_NAME: "SQLBot"
-      DEFAULT_PWD: "SQLBot@123456"
-      # MCP settings
-      SERVER_IMAGE_HOST: http://YOUR_SERVE_IP:MCP_PORT/images/
-      # Auth & Security
-      SECRET_KEY: y5txe1mRmS_JpOrUzFzHEu-kIQn3lf7ll0AOv9DQh0s
-      # CORS settings
-      BACKEND_CORS_ORIGINS: "http://localhost,http://localhost:5173,https://localhost,https://localhost:5173"
-      # Logging
-      LOG_LEVEL: "INFO"
-      SQL_DEBUG: False
+      POSTGRES_DB: ${POSTGRES_DB:-sqlbot}
+      POSTGRES_USER: ${POSTGRES_USER:-root}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Password123@pg}
     volumes:
+      - ./data/postgresql:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - sqlbot
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: sqlbot-backend:latest
+    container_name: sqlbot-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *backend-env
+    volumes:
+      # 图表图片：与 mcp / g2-ssr 共享，保证「写图-提供-触发」链路打通
+      - ./data/sqlbot/images:/opt/sqlbot/images
       - ./data/sqlbot/excel:/opt/sqlbot/data/excel
       - ./data/sqlbot/file:/opt/sqlbot/data/file
-      - ./data/sqlbot/images:/opt/sqlbot/images
+      - ./data/sqlbot/models:/opt/sqlbot/models
       - ./data/sqlbot/logs:/opt/sqlbot/app/logs
-      - ./data/postgresql:/var/lib/postgresql/data
+    expose:
+      - "8000"
+    networks:
+      - sqlbot
+
+  mcp:
+    # 复用后端镜像，仅改启动命令（main:mcp_app）
+    image: sqlbot-backend:latest
+    container_name: sqlbot-mcp
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      <<: *backend-env
+    command:
+      - uvicorn
+      - main:mcp_app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    volumes:
+      - ./data/sqlbot/images:/opt/sqlbot/images
+    ports:
+      # 供外部 MCP 客户端连接（不需要可注释掉，图片仍经 frontend:/images 访问）
+      - "${SQLBOT_MCP_PORT:-8001}:8001"
+    networks:
+      - sqlbot
+
+  g2-ssr:
+    build:
+      context: .
+      dockerfile: g2-ssr/Dockerfile
+    image: sqlbot-g2-ssr:latest
+    container_name: sqlbot-g2-ssr
+    restart: unless-stopped
+    volumes:
+      # 把渲染出的 PNG 写入共享卷，供 mcp 在 /images 提供、backend 触发生成
+      - ./data/sqlbot/images:/opt/sqlbot/images
+    expose:
+      - "3000"
+    networks:
+      - sqlbot
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: sqlbot-frontend:latest
+    container_name: sqlbot-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      # 透传给 nginx envsubst，渲染 location 前缀（默认空）
+      CONTEXT_PATH: ${CONTEXT_PATH:-}
+    ports:
+      - "${SQLBOT_WEB_PORT:-8000}:80"
+    networks:
+      - sqlbot
 
 networks:
-  sqlbot-network:
+  sqlbot:
+    driver: bridge
