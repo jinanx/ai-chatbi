@@ -208,6 +208,12 @@ mcp = FastApiMCP(
 
 mcp.mount(mcp_app)
 
+
+@app.get(f"{settings.CONTEXT_PATH}/health", include_in_schema=False)
+async def health():
+    return {"status": "ok"}
+
+
 # Set all CORS enabled origins
 if settings.all_cors_origins:
     app.add_middleware(

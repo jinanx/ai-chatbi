@@ -5,6 +5,7 @@ from common.core.config import settings
 from common.utils.utils import SQLBotLogUtil
 wlist = [
     "/",
+    "/health",
     "/docs",
     "/login/*",
     "*.ico",
