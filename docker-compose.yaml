@@ -78,8 +78,11 @@ services:
 
   mcp:
     # 复用后端镜像，仅改启动命令（main:mcp_app）
+    # 默认未启用（profiles: [never]）：外网自用部署不需要 MCP 客户端接入。
+    # 启用：docker compose --profile mcp up -d mcp
     image: sqlbot-backend:latest
     container_name: sqlbot-mcp
+    profiles: ["never"]
     restart: unless-stopped
     depends_on:
       backend:
