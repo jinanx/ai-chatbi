@@ -94,7 +94,7 @@ RUN mkdir -p /opt/sqlbot/images /opt/sqlbot/g2-ssr
 EXPOSE 3000 8000 8001 5432
 
 # Add health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python3 -c "import os, urllib.request; urllib.request.urlopen(f'http://localhost:8000/{os.environ.get(\"CONTEXT_PATH\", \"\")}', timeout=3)" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python3 -c "import os, urllib.request; urllib.request.urlopen(f'http://localhost:8000{os.environ.get(\"CONTEXT_PATH\", \"\")}/health', timeout=3)" || exit 1
 
 ENTRYPOINT ["sh", "start.sh"]
