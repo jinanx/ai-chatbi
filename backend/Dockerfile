@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 #
 # SQLBot 后端镜像（多阶段构建）
 # 复用内置了 Python 3.11 + uv + Oracle/达梦 客户端的自定义 base 镜像。
@@ -24,18 +23,18 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR ${APP_HOME}
 
-# 1) 先只装依赖，命中 Docker 层缓存（pyproject/uv.lock 不变时跳过重装）
-#    bind mount 不污染最终镜像；uv cache 跨构建复用
-RUN --mount=type=bind,source=backend/uv.lock,target=uv.lock \
-    --mount=type=bind,source=backend/pyproject.toml,target=pyproject.toml \
-    --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project || uv sync --no-install-project
+# 1) 先装依赖，命中 Docker 层缓存（pyproject/uv.lock 不变时跳过重装）
+#    用 COPY（通配符，缺失不报错）代替 --mount=type=bind，老版 builder 也能跑
+#    shell 兜底：uv.lock 缺失或与 pyproject 不一致时退回非 frozen 模式
+COPY backend/pyproject.toml ./pyproject.toml
+COPY backend/uv.lock* ./uv.lock
+
+RUN sh -c 'uv sync --frozen --no-install-project || uv sync --no-install-project'
 
 # 2) 拷入全部源码并完成最终安装（含 cpu 版 torch）
 COPY backend/ ${APP_HOME}/
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --extra cpu
+RUN uv sync --extra cpu
 
 ############################
 # Stage 2: runtime
