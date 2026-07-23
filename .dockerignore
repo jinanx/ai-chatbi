@@ -29,9 +29,9 @@ backend/README.md
 
 # ---- 前端 ----
 frontend/node_modules
-frontend/dist
 frontend/.cache
 frontend/*.local
+# 注意：frontend/dist 不再忽略——前端镜像只 COPY dist/，必须能进 build context
 
 # ---- g2-ssr ----
 g2-ssr/node_modules
